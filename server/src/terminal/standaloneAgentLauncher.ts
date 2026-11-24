@@ -15,6 +15,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type { AgentProvider } from '../../../core/src/constants.js';
 import type { HookProvider } from '../../../core/src/provider.js';
 import type { PersistedAgent } from '../../../core/src/schemas.js';
 import { restoredAgentInit } from '../agentPersistence.js';
@@ -24,9 +25,10 @@ import type { AgentStateStore } from '../agentStateStore.js';
 import { JSONL_POLL_INTERVAL_MS } from '../constants.js';
 import { clearContextUsage } from '../contextUsage.js';
 import { directoryAt } from '../directories.js';
-import { startFileWatching } from '../fileWatcher.js';
+import { readNewLines, startFileWatching } from '../fileWatcher.js';
 import { directoryNameFor, hostDirectory } from '../hostDirectory.js';
 import { assignPaletteIfNeeded } from '../paletteAssigner.js';
+import { findNewestSessionFile, PROVIDER_DEFINITIONS } from '../providers/index.js';
 import type { AgentState } from '../types.js';
 import { inheritedEnv, terminalEnv } from './terminalEnv.js';
 import type { TerminalSession, TerminalSessions } from './terminalSessions.js';
@@ -52,6 +54,8 @@ export interface LaunchStandaloneAgentOptions {
    *  id, same transcript (read from its end), and the seat its agent sat in
    *  when that one is free. */
   resume?: { sessionId: string; transcript: string; seatId?: string };
+  /** Provider to launch (defaults to 'claude'). */
+  agentProvider?: AgentProvider;
   cols?: number;
   rows?: number;
 }
@@ -72,26 +76,49 @@ export function launchStandaloneAgent(
   }
 
   const cwd = options.directoryPath ?? process.cwd();
+  const activeProvider: AgentProvider = options.agentProvider ?? 'claude';
+  const def = PROVIDER_DEFINITIONS[activeProvider];
+  const launchTime = Date.now();
   const sessionId = options.resume?.sessionId ?? crypto.randomUUID();
 
-  const launch = provider.buildLaunchCommand?.(sessionId, cwd, {
-    bypassPermissions: options.bypassPermissions,
-    resume: options.resume !== undefined,
-  });
+  const launch =
+    activeProvider === 'claude'
+      ? provider.buildLaunchCommand?.(sessionId, cwd, {
+          bypassPermissions: options.bypassPermissions,
+          resume: options.resume !== undefined,
+        })
+      : def.buildLaunchCommand(sessionId, cwd, {
+          bypassPermissions: options.bypassPermissions,
+          resume: options.resume !== undefined,
+        });
   if (!launch) {
-    console.error('[Pixel Agents] Terminal: provider.buildLaunchCommand is not implemented');
+    console.error(
+      `[Pixel Agents] Terminal: ${activeProvider} buildLaunchCommand is not implemented`,
+    );
     return null;
   }
 
-  const dirs = provider.getSessionDirs?.(cwd) ?? [];
-  if (dirs.length === 0) {
-    console.error('[Pixel Agents] Terminal: provider returned no session dirs');
-    return null;
+  let jsonlFile = '';
+  let projectDir = '';
+  if (activeProvider === 'claude') {
+    const dirs = provider.getSessionDirs?.(cwd) ?? [];
+    if (dirs.length === 0) {
+      console.error('[Pixel Agents] Terminal: provider returned no session dirs');
+      return null;
+    }
+    // A resumed session's transcript is wherever the CLI filed it (under the
+    // Directory's resolved path, when it was reached through a symlink).
+    jsonlFile = options.resume?.transcript ?? path.join(dirs[0], `${sessionId}.jsonl`);
+    projectDir = path.dirname(jsonlFile);
+  } else {
+    projectDir = def.getProjectDirPath(cwd) ?? '';
+    jsonlFile =
+      def.resolveSessionFile(
+        cwd,
+        { sessionId, launchedAt: launchTime },
+        runtime.claimedSessionFiles,
+      ) ?? '';
   }
-  // A resumed session's transcript is wherever the CLI filed it (under the
-  // Directory's resolved path, when it was reached through a symlink).
-  const jsonlFile = options.resume?.transcript ?? path.join(dirs[0], `${sessionId}.jsonl`);
-  const projectDir = path.dirname(jsonlFile);
 
   const id = store.nextAgentId.current++;
 
@@ -112,7 +139,9 @@ export function launchStandaloneAgent(
     // it was assigned in the modal actually match. Falls back to the basename
     // for a cwd that is no Directory at all.
     directoryName: directory?.name ?? directoryNameFor(cwd),
-    providerId: provider.id,
+    providerId: activeProvider,
+    sessionFormat: def.sessionFormat,
+    launchTime,
     seatId: options.resume?.seatId,
   });
   if (options.resume) {
@@ -149,7 +178,7 @@ export function launchStandaloneAgent(
     return null;
   }
 
-  admitTerminalAgent(deps, agent, session);
+  admitTerminalAgent(deps, agent, session, cwd);
   // A fresh session starts with an empty context: a full gauge from the spawn on.
   // A resumed one keeps its gauge, read from its transcript.
   if (!options.resume) clearContextUsage(id, store);
@@ -248,13 +277,16 @@ function admitTerminalAgent(
   deps: LaunchStandaloneAgentDeps,
   agent: AgentState,
   session: TerminalSession,
+  cwd: string = process.cwd(),
 ): void {
   const { store, runtime } = deps;
   const id = agent.id;
 
   // Pre-register the expected JSONL so the project scanner doesn't mistake it
   // for a /clear file, exactly as the VS Code path does.
-  runtime.knownJsonlFiles.add(agent.jsonlFile);
+  if (agent.jsonlFile) {
+    runtime.knownJsonlFiles.add(agent.jsonlFile);
+  }
   store.set(id, agent);
   runtime.registerAgent(agent.sessionId, id);
 
@@ -274,7 +306,7 @@ function admitTerminalAgent(
     }
   });
 
-  startJsonlPoll(deps, id, agent);
+  startJsonlPoll(deps, id, agent, cwd);
 }
 
 /**
@@ -286,13 +318,62 @@ function admitTerminalAgent(
  * fresh --session-id or --resume's an existing one, so the transcript is
  * known up front either way.
  */
-function startJsonlPoll(deps: LaunchStandaloneAgentDeps, id: number, agent: AgentState): void {
+function startJsonlPoll(
+  deps: LaunchStandaloneAgentDeps,
+  id: number,
+  agent: AgentState,
+  cwd: string,
+): void {
   const { store, runtime } = deps;
   let pollCount = 0;
 
   const timer = setInterval(() => {
     pollCount++;
     try {
+      const providerId = (agent.providerId as AgentProvider | undefined) ?? 'claude';
+      if (providerId !== 'claude') {
+        const def = PROVIDER_DEFINITIONS[providerId];
+        let found = def.resolveSessionFile(
+          cwd,
+          { sessionId: agent.sessionId, launchedAt: agent.launchTime ?? Date.now() },
+          runtime.claimedSessionFiles,
+        );
+        if (!found && pollCount >= 15) {
+          const providerRoot = def.getProjectDirPath(cwd) ?? '';
+          found =
+            providerId === 'codex'
+              ? findNewestSessionFile(
+                  providerRoot,
+                  (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'),
+                  runtime.claimedSessionFiles,
+                )
+              : findNewestSessionFile(
+                  providerRoot,
+                  (name) => /^session-.*\.json$/.test(name),
+                  runtime.claimedSessionFiles,
+                );
+        }
+        if (!found || !fs.existsSync(found)) return;
+        agent.jsonlFile = found;
+        runtime.knownJsonlFiles.add(found);
+        runtime.claimedSessionFiles.add(found);
+        clearInterval(timer);
+        runtime.jsonlPollTimers.delete(id);
+        if (!store.has(id)) return;
+        startFileWatching(
+          id,
+          found,
+          store,
+          runtime.fileWatchers,
+          runtime.pollingTimers,
+          runtime.waitingTimers,
+          runtime.permissionTimers,
+        );
+        readNewLines(id, store, runtime.waitingTimers, runtime.permissionTimers);
+        store.persist();
+        return;
+      }
+
       if (!fs.existsSync(agent.jsonlFile)) {
         if (pollCount === 10) {
           console.warn(

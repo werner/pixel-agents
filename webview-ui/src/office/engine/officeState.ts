@@ -34,6 +34,7 @@ import type {
   Pet,
   PlacedFurniture,
   PlacedPet,
+  Provider,
   Seat,
   TileType as TileTypeVal,
 } from '../types.js';
@@ -458,6 +459,7 @@ export class OfficeState {
     skipSpawnEffect?: boolean,
     directoryName?: string,
     nearAgentId?: number,
+    provider?: Provider,
   ): void {
     if (this.characters.has(id)) return;
 
@@ -516,6 +518,9 @@ export class OfficeState {
 
     if (directoryName) {
       ch.directoryName = directoryName;
+    }
+    if (provider) {
+      ch.provider = provider;
     }
     if (!skipSpawnEffect) {
       startMatrixEffect(ch, 'spawn');

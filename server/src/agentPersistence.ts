@@ -1,5 +1,6 @@
 import * as path from 'path';
 
+import type { AgentProvider } from '../../core/src/constants.js';
 import type { PersistedAgent } from '../../core/src/schemas.js';
 import type { AgentStateInit } from './agentState.js';
 import {
@@ -29,6 +30,8 @@ export function toPersistedAgent(agent: AgentState): PersistedAgent | null {
     isExternal: agent.isExternal || undefined,
     jsonlFile: agent.jsonlFile,
     projectDir: agent.projectDir,
+    provider: (agent.providerId as AgentProvider | undefined) ?? 'claude',
+    sessionFormat: agent.sessionFormat,
     directoryName: agent.directoryName,
     teamName: agent.teamName,
     agentName: agent.agentName,
@@ -51,11 +54,14 @@ export function isPersistedSpawnChild(p: PersistedAgent): boolean {
 /** What a restored agent starts from. The caller adds how it runs
  *  (`isExternal`, and the terminal it was rebound to). */
 export function restoredAgentInit(p: PersistedAgent): Omit<AgentStateInit, 'isExternal'> {
+  const provider: AgentProvider = p.provider ?? 'claude';
   return {
     id: p.id,
-    sessionId: p.sessionId || path.basename(p.jsonlFile, '.jsonl'),
+    sessionId: p.sessionId || (p.jsonlFile ? path.basename(p.jsonlFile, '.jsonl') : ''),
     projectDir: p.projectDir,
     jsonlFile: p.jsonlFile,
+    providerId: provider,
+    sessionFormat: p.sessionFormat ?? (provider === 'gemini' ? 'gemini-json' : 'jsonl'),
     // Live spawns survive the reload so the 1 s scan can re-adopt their
     // transcripts and the completion queue-operation still matches. Ones
     // whose completion is already in the transcript are dropped: the save on

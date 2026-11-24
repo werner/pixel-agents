@@ -1,3 +1,4 @@
+import type { AgentProvider } from '../../core/src/constants.js';
 import type { AgentState } from './types.js';
 
 /**
@@ -10,6 +11,7 @@ export function agentCreatedMessage(id: number, agent: AgentState): Record<strin
     type: 'agentCreated',
     id,
     directoryName: agent.directoryName,
+    provider: (agent.providerId as AgentProvider | undefined) ?? 'claude',
     isExternal: agent.isExternal || undefined,
     isTeammate: agent.leadAgentId !== undefined || undefined,
     teammateName: agent.agentName,

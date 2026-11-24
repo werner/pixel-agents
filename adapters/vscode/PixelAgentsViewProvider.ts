@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import type { StateAdapter } from '../../core/src/adapter.js';
+import type { AgentProvider } from '../../core/src/constants.js';
 import { rosterPick } from '../../core/src/paletteUtils.js';
 import type { HookProvider } from '../../core/src/provider.js';
 import { buildAgentDiagnostics } from '../../server/src/agentDiagnostics.js';
@@ -67,8 +68,14 @@ import { hooksConsentRequest } from '../../server/src/providers/hook/consentGate
 import {
   claudeProvider,
   copyHookScript,
+  detectInstalledProviders,
+  ensureDefaultProviderInitialized,
+  getProviderPreference,
+  getRecommendedProvider,
   hookProviderById,
   hookProviders,
+  isAgentProvider,
+  saveProviderPreference,
 } from '../../server/src/providers/index.js';
 import { recentCharactersMessage, recordCharacterUse } from '../../server/src/recentCharacters.js';
 import { PixelAgentsServer } from '../../server/src/server.js';
@@ -475,7 +482,20 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
-      if (message.type === 'launchAgent') {
+      if (
+        message.type === 'launchAgent' ||
+        message.type === 'openAgent' ||
+        message.type === 'openClaude'
+      ) {
+        const installed = detectInstalledProviders();
+        const pref = getProviderPreference(this.adapter, installed);
+        const requested = isAgentProvider(message.provider) ? message.provider : undefined;
+        const provider: AgentProvider =
+          requested ?? pref.defaultProvider ?? getRecommendedProvider(installed) ?? 'claude';
+        if (!installed[provider]) {
+          vscode.window.showErrorMessage(`Pixel Agents: ${provider} CLI is not installed.`);
+          return;
+        }
         const prevAgentIds = new Set(this.store.keys());
         const picked = rosterPick(message.palette, getPaletteCount());
         await launchNewTerminal(
@@ -495,7 +515,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             // Every launch comes from a drawer row and carries its Directory's
             // path; no directoryPath leaves launchNewTerminal's own fallback —
             // the first workspace folder — exactly as it was.
-            directoryPath: message.directoryPath as string | undefined,
+            directoryPath: (message.directoryPath ?? message.folderPath) as string | undefined,
             // Permission posture is a persisted per-host setting, never a
             // per-launch field: the webview sends only where to launch (and,
             // picked from the roster, which character).
@@ -504,6 +524,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
               false,
             ),
             palette: picked,
+            provider,
+            claimedSessionFiles: this.runtime.claimedSessionFiles,
           },
         );
         // A roster pick moves to the front of the roster.
@@ -515,6 +537,17 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             this.runtime.registerAgent(agent.sessionId, id);
           }
         }
+      } else if (message.type === 'saveProviderPreference') {
+        const defaultProvider = isAgentProvider(message.defaultProvider)
+          ? message.defaultProvider
+          : null;
+        const askEachTime = !!message.askEachTime;
+        saveProviderPreference(this.adapter, defaultProvider, askEachTime);
+        this.webview?.postMessage({
+          type: 'providerPreferenceSaved',
+          defaultProvider,
+          askEachTime,
+        });
       } else if (message.type === 'focusAgent') {
         const agent = this.store.get(message.id);
         if (agent) {
@@ -745,6 +778,22 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           showHostDirectories,
         });
 
+        const installedProviders = detectInstalledProviders();
+        ensureDefaultProviderInitialized(this.adapter, installedProviders);
+        const recommendedProvider = getRecommendedProvider(installedProviders);
+        const providerPref = getProviderPreference(this.adapter, installedProviders);
+        this.webview?.postMessage({
+          type: 'providersDetected',
+          installed: installedProviders,
+          recommended: recommendedProvider,
+        });
+        this.webview?.postMessage({
+          type: 'providerPreferenceLoaded',
+          defaultProvider: providerPref.defaultProvider,
+          askEachTime: providerPref.askEachTime,
+          preferenceSet: providerPref.preferenceSet,
+        });
+
         // One status + at most one consent ask PER PROVIDER. Install state is distinct from the hooksEnabled
         // preference, which defaults true while consent is pending. Opening the office is the moment the user can be
         // asked, so the ask rides this handshake; consentGate owns every condition (standalone calls the same
@@ -803,6 +852,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.runtime.jsonlPollTimers,
           this.runtime.projectScanTimer,
           this.runtime.activeAgentId,
+          this.runtime.claimedSessionFiles,
         );
         // Register all restored agents with hook handler
         for (const agent of this.store.values()) {

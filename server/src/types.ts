@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
 
+import type { SessionFormat } from '../../core/src/constants.js';
 import type { BackgroundSpawns } from './backgroundSpawns.js';
 
 export interface AgentState {
@@ -42,6 +43,18 @@ export interface AgentState {
   hooksOnly?: boolean;
   /** Provider that created this agent (defaults to 'claude') */
   providerId?: string;
+  /** Transcript format used by this agent ('jsonl' | 'gemini-json', defaults to 'jsonl') */
+  sessionFormat?: SessionFormat;
+  /** Epoch timestamp (ms) when the agent terminal was launched */
+  launchTime?: number;
+  /** Gemini snapshot tracking: seen tool call IDs */
+  seenToolCalls?: Set<string>;
+  /** Gemini snapshot tracking: completed tool call IDs */
+  seenToolDone?: Set<string>;
+  /** Gemini snapshot tracking: number of messages processed */
+  processedGeminiMessages?: number;
+  /** Gemini snapshot tracking: timestamp of last processed message */
+  lastGeminiMessageTs?: string;
   /** Set when SessionEnd(reason=clear) fires; cleared when SessionStart(source=clear) reassigns */
   pendingClear?: boolean;
   /** Hook-generated tool ID for PreToolUse/PostToolUse correlation */

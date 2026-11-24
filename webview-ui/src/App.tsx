@@ -27,6 +27,7 @@ import { useConversationSidebar } from './conversations/useConversationSidebar.j
 import { useDirectoryEditor } from './hooks/useDirectoryEditor.js';
 import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
+import type { Directory } from './hooks/useExtensionMessages.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
 import { useIntroTour } from './hooks/useIntroTour.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -49,6 +50,7 @@ import { isRotatable } from './office/layout/furnitureCatalog.js';
 import { migrateLayoutColors } from './office/layout/layoutSerializer.js';
 import { overlayProjection } from './office/projection.js';
 import { getPetCount } from './office/sprites/petSpriteData.js';
+import type { Provider } from './office/types.js';
 import { EditTool, type OfficeLayout, TILE_SIZE } from './office/types.js';
 import { isBrowserRuntime, isE2E } from './runtime.js';
 import { installTestHooks } from './testHooks.js';
@@ -135,6 +137,8 @@ function App() {
     terminalAgentIds,
     cardAgents,
     saveCardOrder,
+    providers,
+    providerPreference,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
   const usage = useUsageBridge();
 
@@ -189,8 +193,30 @@ function App() {
     besidePx: hasSidebar && sidebar.open ? CONVERSATION_SIDEBAR_WIDTH_PX : 0,
   });
 
-  const { launch: launchIntoDirectory, resume: resumeAndFocus } = useLaunchActions(
+  const { launch: launchWithProvider, resume: resumeAndFocus } = useLaunchActions(
     terminalDrawer.expectLaunch,
+  );
+  const [pendingLaunch, setPendingLaunch] = useState<{
+    directory: Directory;
+    palette?: number;
+  } | null>(null);
+  const installedProviders = useMemo(
+    () => providers.filter((p) => p.installed).map((p) => p.id),
+    [providers],
+  );
+  const launchIntoDirectory = useCallback(
+    (directory: Directory, palette?: number) => {
+      if (providerPreference.askEachTime && installedProviders.length > 1) {
+        setPendingLaunch({ directory, palette });
+        return;
+      }
+      const preferred = providerPreference.defaultProvider;
+      const resolvedProvider: Provider = installedProviders.includes(preferred)
+        ? preferred
+        : (installedProviders[0] ?? 'claude');
+      launchWithProvider(directory, palette, resolvedProvider);
+    },
+    [providerPreference, installedProviders, launchWithProvider],
   );
   const mobileShell = useMobileShell({
     getOfficeState,
@@ -1018,7 +1044,36 @@ function App() {
         }}
         onExportLayout={handleExportLayout}
         onImportLayout={handleImportLayout}
+        providers={providers}
+        providerPreference={providerPreference}
       />
+
+      {pendingLaunch && (
+        <Modal isOpen onClose={() => setPendingLaunch(null)} title="Choose AI Provider" zIndex={60}>
+          <div className="flex flex-col gap-4 px-10 pb-8">
+            {providers.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                disabled={!p.installed}
+                onClick={() => {
+                  const target = pendingLaunch;
+                  setPendingLaunch(null);
+                  launchWithProvider(target.directory, target.palette, p.id);
+                }}
+                className={`flex items-center justify-between px-10 py-6 text-sm border-2 border-border rounded-none cursor-pointer bg-btn-bg hover:bg-white/10 text-text ${
+                  p.installed ? '' : 'opacity-50 cursor-default'
+                }`}
+              >
+                <span className="capitalize">{p.id}</span>
+                <span className={`text-xs ${p.installed ? 'text-status-ok' : 'text-status-error'}`}>
+                  {p.installed ? 'Installed' : 'Missing'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {showMigrationNotice && (
         <MigrationNotice onDismiss={() => setMigrationNoticeDismissed(true)} />

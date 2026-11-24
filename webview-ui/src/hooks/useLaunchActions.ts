@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 
 import { resumeConversation } from '../conversations/useConversations.js';
+import type { Provider } from '../office/types.js';
 import { transport } from '../transport/index.js';
 import type { Directory } from './useExtensionMessages.js';
 
@@ -13,9 +14,9 @@ export function useLaunchActions(expectLaunch: () => void) {
   // palette: the character picked from the roster (absent = the Directory's
   // default characters, else a random pick, server-side).
   const launch = useCallback(
-    (directory: Directory, palette?: number) => {
+    (directory: Directory, palette?: number, provider?: Provider) => {
       expectLaunch();
-      transport.send({ type: 'launchAgent', directoryPath: directory.path, palette });
+      transport.send({ type: 'launchAgent', directoryPath: directory.path, palette, provider });
     },
     [expectLaunch],
   );

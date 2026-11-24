@@ -9,6 +9,8 @@
  * the contract, hence the @public tags.
  */
 
+import type { AgentProvider, SessionFormat } from './constants.js';
+
 // ── Agent State ──────────────────────────────────────────────
 
 /** Persisted agent data (survives F5 reload / restart) */
@@ -19,6 +21,8 @@ export interface PersistedAgent {
   isExternal?: boolean;
   jsonlFile: string;
   projectDir: string;
+  provider?: AgentProvider;
+  sessionFormat?: SessionFormat;
   directoryName?: string;
   /** Pre-Directory spelling of `directoryName`, written by releases up to
    *  v1.4.x. Read as a fallback on restore; never written. */

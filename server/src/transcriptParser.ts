@@ -1,9 +1,15 @@
 const debug = process.env.PIXEL_AGENTS_DEBUG !== '0';
 
+import * as path from 'path';
+
 import type { HookProvider } from '../../core/src/provider.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import { launchSpawn, readCompletionNotices } from './backgroundSpawns.js';
-import { TEXT_IDLE_DELAY_MS, TOOL_DONE_DELAY_MS } from './constants.js';
+import {
+  BASH_COMMAND_DISPLAY_MAX_LENGTH,
+  TEXT_IDLE_DELAY_MS,
+  TOOL_DONE_DELAY_MS,
+} from './constants.js';
 import { updateContextUsage } from './contextUsage.js';
 import { hasInlineTeammates, hasPromotedBackgroundAgent } from './teamUtils.js';
 import {
@@ -116,6 +122,223 @@ export function formatToolStatus(toolName: string, input: Record<string, unknown
   return hookProvider?.formatToolStatus(toolName, input) ?? `Using ${toolName}`;
 }
 
+/** Format tool status across Claude, Codex, and Gemini tool names. */
+function formatMultiProviderToolStatus(toolName: string, input: Record<string, unknown>): string {
+  const base = (p: unknown) => (typeof p === 'string' ? path.basename(p) : '');
+  switch (toolName) {
+    case 'read_file':
+      return `Reading ${base(input.file_path ?? input.path)}`;
+    case 'replace':
+      return `Editing ${base(input.file_path ?? input.path)}`;
+    case 'write_file':
+      return `Writing ${base(input.file_path ?? input.path)}`;
+    case 'shell_command':
+    case 'run_shell_command': {
+      const cmd = typeof input.command === 'string' ? input.command : '';
+      return `Running: ${cmd.length > BASH_COMMAND_DISPLAY_MAX_LENGTH ? cmd.slice(0, BASH_COMMAND_DISPLAY_MAX_LENGTH) + '\u2026' : cmd}`;
+    }
+    case 'google_web_search':
+      return 'Searching the web';
+    default:
+      return formatToolStatus(toolName, input);
+  }
+}
+
+export function processGeminiSessionSnapshot(
+  agentId: number,
+  rawJson: string,
+  agents: AgentStateStore,
+  waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
+): void {
+  const agent = agents.get(agentId);
+  if (!agent) return;
+  try {
+    const parsed = JSON.parse(rawJson) as { messages?: Array<Record<string, unknown>> };
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const startIdx = agent.processedGeminiMessages ?? 0;
+    if (messages.length <= startIdx) return;
+    agent.lastDataAt = Date.now();
+    agent.linesProcessed++;
+
+    let currentTurnToolId: string | null = null;
+    for (const toolId of agent.activeToolIds) {
+      if (toolId.startsWith('gemini-turn:')) {
+        currentTurnToolId = toolId;
+        break;
+      }
+    }
+
+    for (let i = startIdx; i < messages.length; i++) {
+      const msg = messages[i];
+      const msgType = typeof msg.type === 'string' ? msg.type : '';
+      const msgId = typeof msg.id === 'string' ? msg.id : `${i}`;
+      const ts = typeof msg.timestamp === 'string' ? msg.timestamp : undefined;
+      if (ts) {
+        agent.lastGeminiMessageTs = ts;
+      }
+
+      if (msgType === 'user' && currentTurnToolId === null) {
+        const virtualToolId = `gemini-turn:${msgId}`;
+        const status = 'Thinking';
+        currentTurnToolId = virtualToolId;
+        agent.activeToolIds.add(virtualToolId);
+        agent.activeToolStatuses.set(virtualToolId, status);
+        agent.activeToolNames.set(virtualToolId, 'GeminiTurn');
+        agents.broadcast({ type: 'agentToolStart', id: agentId, toolId: virtualToolId, status });
+        agent.turnActive = true;
+        agent.isWaiting = false;
+        agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+        cancelWaitingTimer(agentId, waitingTimers);
+      }
+
+      if (msgType === 'gemini') {
+        agent.turnActive = true;
+        agent.isWaiting = false;
+        agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+        cancelWaitingTimer(agentId, waitingTimers);
+        if (currentTurnToolId) {
+          const finished = currentTurnToolId;
+          agent.activeToolIds.delete(finished);
+          agent.activeToolStatuses.delete(finished);
+          agent.activeToolNames.delete(finished);
+          currentTurnToolId = null;
+          setTimeout(() => {
+            agents.broadcast({ type: 'agentToolDone', id: agentId, toolId: finished });
+          }, TOOL_DONE_DELAY_MS);
+        }
+      }
+
+      const toolCalls = Array.isArray(msg.toolCalls)
+        ? (msg.toolCalls as Array<Record<string, unknown>>)
+        : [];
+      for (const call of toolCalls) {
+        const callId = typeof call.id === 'string' ? call.id : '';
+        if (!callId) continue;
+        if (!agent.seenToolCalls) agent.seenToolCalls = new Set();
+        if (!agent.seenToolDone) agent.seenToolDone = new Set();
+        if (!agent.seenToolCalls.has(callId)) {
+          const toolName = typeof call.name === 'string' ? call.name : 'Tool';
+          const args = (call.args as Record<string, unknown>) || {};
+          const status = formatMultiProviderToolStatus(toolName, args);
+          agent.seenToolCalls.add(callId);
+          agent.activeToolIds.add(callId);
+          agent.activeToolStatuses.set(callId, status);
+          agent.activeToolNames.set(callId, toolName);
+          agents.broadcast({ type: 'agentToolStart', id: agentId, toolId: callId, status });
+          agent.turnActive = true;
+          agent.isWaiting = false;
+          agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+          cancelWaitingTimer(agentId, waitingTimers);
+        }
+
+        const doneStatus = typeof call.status === 'string' ? call.status : '';
+        if (
+          (doneStatus === 'success' || doneStatus === 'error') &&
+          !agent.seenToolDone.has(callId)
+        ) {
+          agent.seenToolDone.add(callId);
+          agent.activeToolIds.delete(callId);
+          agent.activeToolStatuses.delete(callId);
+          agent.activeToolNames.delete(callId);
+          const toolId = callId;
+          setTimeout(() => {
+            agents.broadcast({ type: 'agentToolDone', id: agentId, toolId });
+          }, TOOL_DONE_DELAY_MS);
+        }
+      }
+
+      if (msgType === 'gemini') {
+        startWaitingTimer(agentId, TEXT_IDLE_DELAY_MS, agents, waitingTimers);
+      }
+    }
+
+    agent.processedGeminiMessages = messages.length;
+  } catch {
+    // ignore malformed session snapshot
+  }
+}
+
+function processCodexRecord(
+  agentId: number,
+  line: string,
+  agent: AgentState,
+  agents: AgentStateStore,
+  waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
+  permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
+): void {
+  try {
+    const record = JSON.parse(line) as Record<string, unknown>;
+    const topType = record.type;
+    if (topType === 'response_item') {
+      const payload = record.payload as Record<string, unknown> | undefined;
+      if (!payload) return;
+      const payloadType = payload.type;
+      if (payloadType === 'function_call') {
+        const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
+        const toolName = typeof payload.name === 'string' ? payload.name : 'Tool';
+        if (!callId) return;
+        let args: Record<string, unknown> = {};
+        const rawArgs = payload.arguments;
+        if (typeof rawArgs === 'string') {
+          try {
+            args = JSON.parse(rawArgs) as Record<string, unknown>;
+          } catch {
+            args = { command: rawArgs };
+          }
+        }
+        const status = formatMultiProviderToolStatus(toolName, args);
+        agent.activeToolIds.add(callId);
+        agent.activeToolStatuses.set(callId, status);
+        agent.activeToolNames.set(callId, toolName);
+        agents.broadcast({ type: 'agentToolStart', id: agentId, toolId: callId, status });
+        agent.turnActive = true;
+        agent.isWaiting = false;
+        agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+        cancelWaitingTimer(agentId, waitingTimers);
+        startWaitingTimer(agentId, TEXT_IDLE_DELAY_MS, agents, waitingTimers);
+      } else if (payloadType === 'function_call_output') {
+        const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
+        if (!callId) return;
+        agent.activeToolIds.delete(callId);
+        agent.activeToolStatuses.delete(callId);
+        agent.activeToolNames.delete(callId);
+        setTimeout(() => {
+          agents.broadcast({ type: 'agentToolDone', id: agentId, toolId: callId });
+        }, TOOL_DONE_DELAY_MS);
+        startWaitingTimer(agentId, TEXT_IDLE_DELAY_MS, agents, waitingTimers);
+      } else if (payloadType === 'message') {
+        const role = payload.role;
+        if (role === 'assistant') {
+          agent.turnActive = true;
+          agent.isWaiting = false;
+          agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+          cancelWaitingTimer(agentId, waitingTimers);
+          startWaitingTimer(agentId, TEXT_IDLE_DELAY_MS, agents, waitingTimers);
+        }
+      }
+    } else if (topType === 'event_msg') {
+      const payload = record.payload as Record<string, unknown> | undefined;
+      const eventType = payload?.type;
+      if (eventType === 'task_complete') {
+        cancelWaitingTimer(agentId, waitingTimers);
+        cancelPermissionTimer(agentId, permissionTimers);
+        if (agent.activeToolIds.size > 0) {
+          agent.activeToolIds.clear();
+          agent.activeToolStatuses.clear();
+          agent.activeToolNames.clear();
+          agents.broadcast({ type: 'agentToolsClear', id: agentId });
+        }
+        agent.isWaiting = true;
+        agent.turnActive = false;
+        agent.permissionSent = false;
+        agents.broadcast({ type: 'agentStatus', id: agentId, status: 'waiting' });
+      }
+    }
+  } catch {
+    // ignore malformed lines
+  }
+}
+
 export function processTranscriptLine(
   agentId: number,
   line: string,
@@ -127,6 +350,10 @@ export function processTranscriptLine(
   if (!agent) return;
   agent.lastDataAt = Date.now();
   agent.linesProcessed++;
+  if (agent.providerId === 'codex') {
+    processCodexRecord(agentId, line, agent, agents, waitingTimers, permissionTimers);
+    return;
+  }
   try {
     const record = JSON.parse(line);
     // Background agents' completion notices, as the provider reads them.

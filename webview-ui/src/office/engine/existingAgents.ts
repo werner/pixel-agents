@@ -11,6 +11,8 @@
 // Depending on layoutLoaded always arriving last stranded restored agents on any
 // surface that sends layout first (e.g. the VS Code no-assets path), issue #334.
 
+import type { Provider } from '../types.js';
+
 /** Per-agent seat metadata carried by the existingAgents message. */
 export interface ExistingAgentMeta {
   palette?: number;
@@ -26,6 +28,7 @@ export interface PendingAgent {
   seatId?: string;
   directoryName?: string;
   isHeadless?: boolean;
+  provider?: Provider;
 }
 
 /** Minimal structural view of OfficeState this reconciler needs. */
@@ -38,6 +41,8 @@ export interface ExistingAgentsOffice {
     preferredSeatId?: string,
     skipSpawnEffect?: boolean,
     directoryName?: string,
+    nearAgentId?: number,
+    provider?: Provider,
   ) => void;
   setHeadless: (id: number, headless: boolean) => void;
   /** Start an agent at rest: not working, resting in its chair if it has one. */
@@ -52,7 +57,7 @@ export interface ExistingAgentsOffice {
  * an agent starts out idle, resting in its chair, instead of typing at a turn long over.
  */
 export function restoreAgent(os: ExistingAgentsOffice, p: PendingAgent): void {
-  os.addAgent(p.id, p.palette, p.repeat, p.seatId, true, p.directoryName);
+  os.addAgent(p.id, p.palette, p.repeat, p.seatId, true, p.directoryName, undefined, p.provider);
   if (p.isHeadless) os.setHeadless(p.id, true);
   os.restAgent(p.id);
 }
@@ -73,6 +78,7 @@ export function reconcileExistingAgents(
   layoutReady: boolean,
   pending: PendingAgent[],
   headlessAgents: Record<number, boolean> = {},
+  providers: Record<number, Provider> = {},
 ): boolean {
   let addedDirectly = false;
   for (const id of incoming) {
@@ -84,6 +90,7 @@ export function reconcileExistingAgents(
       seatId: m?.seatId,
       directoryName: directoryNames[id],
       isHeadless: headlessAgents[id] === true,
+      ...(providers[id] ? { provider: providers[id] } : {}),
     };
     if (layoutReady) {
       if (!os.characters.has(p.id)) {

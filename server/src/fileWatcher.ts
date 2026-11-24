@@ -49,7 +49,11 @@ import { assignPaletteIfNeeded } from './paletteAssigner.js';
 import { pathsMatch } from './pathKey.js';
 import type { SubagentWatch } from './subagentWatch.js';
 import { cancelPermissionTimer, cancelWaitingTimer, clearAgentActivity } from './timerManager.js';
-import { getHookProvider, processTranscriptLine } from './transcriptParser.js';
+import {
+  getHookProvider,
+  processGeminiSessionSnapshot,
+  processTranscriptLine,
+} from './transcriptParser.js';
 import type { AgentState } from './types.js';
 
 /** Dismissal tracker instance. Set once at startup via setDismissalTracker().
@@ -113,7 +117,10 @@ export function startFileWatching(
   // Every watched agent passes through here, so this is the one place that can
   // give an agent adopted or restored mid-session a context gauge without
   // replaying its whole transcript.
-  seedContextUsage(agentId, agents, getHookProvider());
+  const watchedAgent = agents.get(agentId);
+  if (watchedAgent?.sessionFormat !== 'gemini-json') {
+    seedContextUsage(agentId, agents, getHookProvider());
+  }
 
   // Single polling approach: reliable on all platforms (macOS, Linux, WSL2, Windows).
   // Previously used triple-redundant fs.watch + fs.watchFile + setInterval, but
@@ -132,6 +139,7 @@ export function startFileWatching(
     // HEURISTIC FALLBACK: Per-agent /clear detection (skipped when hooks handle sessions).
     // When hooks are active, SessionEnd+SessionStart handle /clear reliably.
     if (
+      (!agent.providerId || agent.providerId === 'claude') &&
       !agent.hookDelivered &&
       clearDetectionDeps &&
       agent.fileOffset === prevOffset &&
@@ -208,8 +216,18 @@ export function readNewLines(
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 ): void {
   const agent = agents.get(agentId);
-  if (!agent) return;
+  if (!agent || !agent.jsonlFile) return;
   try {
+    if (agent.sessionFormat === 'gemini-json') {
+      const stat = fs.statSync(agent.jsonlFile);
+      if (stat.size <= agent.fileOffset && agent.processedGeminiMessages !== undefined) return;
+      const raw = fs.readFileSync(agent.jsonlFile, 'utf-8');
+      agent.fileOffset = stat.size;
+      cancelPermissionTimer(agentId, permissionTimers);
+      processGeminiSessionSnapshot(agentId, raw, agents, waitingTimers);
+      return;
+    }
+
     const stat = fs.statSync(agent.jsonlFile);
     if (stat.size <= agent.fileOffset) return;
 

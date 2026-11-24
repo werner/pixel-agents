@@ -9,6 +9,9 @@
 
 export type ServerMessage =
   | ProviderCapabilities
+  | ProvidersDetected
+  | ProviderPreferenceLoaded
+  | ProviderPreferenceSaved
   | AgentCreated
   | AgentClosed
   | AgentSelected
@@ -89,7 +92,8 @@ export type ClientMessage =
   | RequestConversations
   | SearchConversations
   | ResumeConversation
-  | RequestDiagnostics;
+  | RequestDiagnostics
+  | SaveProviderPreference;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -97,15 +101,37 @@ export interface ProviderCapabilities {
   subagentToolNames: string[];
 }
 
+export interface ProvidersDetected {
+  type: 'providersDetected';
+  installed: Record<string, boolean>;
+  recommended: string | null;
+}
+
+export interface ProviderPreferenceLoaded {
+  type: 'providerPreferenceLoaded';
+  defaultProvider: string | null;
+  askEachTime: boolean;
+  preferenceSet: boolean;
+}
+
+export interface ProviderPreferenceSaved {
+  type: 'providerPreferenceSaved';
+  defaultProvider: string | null;
+  askEachTime: boolean;
+}
+
 export interface AgentCreated {
   type: 'agentCreated';
   id: number;
   directoryName?: string;
+  provider?: AgentProviderId;
   isExternal?: boolean;
   palette?: number;
   repeat?: number;
   seatId?: string;
 }
+
+export type AgentProviderId = 'claude' | 'codex' | 'gemini';
 
 export interface AgentClosed {
   type: 'agentClosed';
@@ -123,6 +149,7 @@ export interface ExistingAgents {
   agentMeta: Record<string, AgentSeatMeta>;
   directoryNames: Record<string, string>;
   externalAgents: Record<string, boolean>;
+  providers?: Record<string, AgentProviderId>;
 }
 
 export interface AgentSeatMeta {
@@ -532,6 +559,7 @@ export interface WebviewReady {
 export interface LaunchAgent {
   type: 'launchAgent';
   directoryPath?: string;
+  provider?: AgentProviderId;
   palette?: number;
 }
 
@@ -713,4 +741,10 @@ export interface ResumeConversation {
 
 export interface RequestDiagnostics {
   type: 'requestDiagnostics';
+}
+
+export interface SaveProviderPreference {
+  type: 'saveProviderPreference';
+  defaultProvider: string | null;
+  askEachTime: boolean;
 }

@@ -1,4 +1,5 @@
 import type { StateAdapter } from '../../core/src/adapter.js';
+import type { AgentProvider } from '../../core/src/constants.js';
 import { rosterPick } from '../../core/src/paletteUtils.js';
 import type { HookProvider } from '../../core/src/provider.js';
 import { resendAgentActivity } from './agentActivityResend.js';
@@ -41,7 +42,18 @@ import { getPaletteCount } from './paletteAssigner.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
 import { hooksConsentRequest } from './providers/hook/consentGate.js';
-import { claudeProvider, hookProviderById, hookProviders } from './providers/index.js';
+import {
+  claudeProvider,
+  detectInstalledProviders,
+  ensureDefaultProviderInitialized,
+  getProviderPreference,
+  getRecommendedProvider,
+  hookProviderById,
+  hookProviders,
+  isAgentProvider,
+  KEY_DEFAULT_PROVIDER,
+  saveProviderPreference,
+} from './providers/index.js';
 import { recentCharactersMessage, recordCharacterUse } from './recentCharacters.js';
 import { launchStandaloneAgent } from './terminal/standaloneAgentLauncher.js';
 import type { TerminalSessions } from './terminal/terminalSessions.js';
@@ -179,6 +191,10 @@ export function handleClientMessage(
       // the browser drawer (a shell running as the operator -- privileged, like
       // every message past the read-only gate above).
       if (!runtime || !ctx.ptyManager) break;
+      const requested = isAgentProvider(msg.provider) ? msg.provider : undefined;
+      const savedProvider = adapter?.getSetting<string | null>(KEY_DEFAULT_PROVIDER, null);
+      const provider: AgentProvider =
+        requested ?? (isAgentProvider(savedProvider) ? savedProvider : 'claude');
       // Permission posture is a persisted per-host setting, never a per-launch
       // field: the client sends only where to launch. Every launch comes from a
       // drawer row and carries its Directory's path; no directoryPath falls
@@ -190,6 +206,7 @@ export function handleClientMessage(
           directoryPath: msg.directoryPath as string | undefined,
           bypassPermissions: adapter?.getSetting(KEY_BYPASS_PERMISSIONS, false) ?? false,
           palette: picked,
+          agentProvider: provider,
         },
       );
       // A roster pick moves to the front of every office's roster, once an
@@ -197,6 +214,18 @@ export function handleClientMessage(
       if (launched === null) break;
       const recent = recordCharacterUse(picked);
       if (recent) store.broadcast(recent);
+      break;
+    }
+
+    case 'saveProviderPreference': {
+      const defaultProvider = isAgentProvider(msg.defaultProvider) ? msg.defaultProvider : null;
+      const askEachTime = !!msg.askEachTime;
+      saveProviderPreference(adapter, defaultProvider, askEachTime);
+      store.broadcast({
+        type: 'providerPreferenceSaved',
+        defaultProvider,
+        askEachTime,
+      });
       break;
     }
 
@@ -726,6 +755,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   const externalAgents: Record<number, boolean> = {};
   const persistedSeats = adapter?.loadSeats() ?? {};
   const agentMeta: Record<number, { palette?: number; repeat?: number; seatId?: string }> = {};
+  const providers: Record<number, AgentProvider> = {};
   for (const [id, agent] of store) {
     agentIds.push(id);
     if (agent.directoryName) {
@@ -734,6 +764,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     if (agent.isExternal) {
       externalAgents[id] = true;
     }
+    providers[id] = (agent.providerId as AgentProvider | undefined) ?? 'claude';
     const persisted = persistedSeats[String(id)];
     agentMeta[id] = {
       palette: agent.palette,
@@ -749,6 +780,23 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     agentMeta,
     directoryNames,
     externalAgents,
+    providers,
+  });
+
+  const installedProviders = detectInstalledProviders();
+  ensureDefaultProviderInitialized(adapter, installedProviders);
+  const recommendedProvider = getRecommendedProvider(installedProviders);
+  const providerPref = getProviderPreference(adapter, installedProviders);
+  send({
+    type: 'providersDetected',
+    installed: installedProviders,
+    recommended: recommendedProvider,
+  });
+  send({
+    type: 'providerPreferenceLoaded',
+    defaultProvider: providerPref.defaultProvider,
+    askEachTime: providerPref.askEachTime,
+    preferenceSet: providerPref.preferenceSet,
   });
 
   // 7. Layout last (see step 3): flushes the webview's buffered existingAgents

@@ -32,6 +32,11 @@ export const TASK_DESCRIPTION_DISPLAY_MAX_LENGTH = 40;
  *  server/src/wsAuth.ts); the frame shapes are in terminalFrames.ts. */
 export const TERMINAL_WS_PREFIX = '/terminal';
 
+// ── Multi-Provider Agents ────────────────────────────────────
+export const AGENT_PROVIDERS = ['claude', 'codex', 'gemini'] as const;
+export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
+export type SessionFormat = 'jsonl' | 'gemini-json';
+
 // ── Transport ────────────────────────────────────────────────
 // Connection-state names for the MessageTransport state machine.
 

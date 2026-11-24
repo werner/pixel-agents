@@ -73,6 +73,7 @@ export class AgentRuntime {
   // recognized as known when a scanner rebuilds the path from the workspace folder
   // -- the two spellings differ by drive-letter case on Windows.
   readonly knownJsonlFiles = new PathSet();
+  readonly claimedSessionFiles = new Set<string>();
   readonly projectScanTimer = { current: null as ReturnType<typeof setInterval> | null };
   readonly activeAgentId = { current: null as number | null };
   private externalScanTimer: ReturnType<typeof setInterval> | null = null;
@@ -321,6 +322,10 @@ export class AgentRuntime {
     if (!agent) return;
 
     this.stopWatching(id);
+
+    if (agent.jsonlFile) {
+      this.claimedSessionFiles.delete(agent.jsonlFile);
+    }
 
     // Notify adapter before deleting from store
     this.lifecycleCallbacks.onAgentRemoved?.(id, agent);

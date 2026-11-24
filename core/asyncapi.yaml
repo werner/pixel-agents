@@ -79,6 +79,9 @@ components:
       oneOf:
         # Provider capabilities
         - $ref: '#/components/schemas/ProviderCapabilities'
+        - $ref: '#/components/schemas/ProvidersDetected'
+        - $ref: '#/components/schemas/ProviderPreferenceLoaded'
+        - $ref: '#/components/schemas/ProviderPreferenceSaved'
         # Agent lifecycle
         - $ref: '#/components/schemas/AgentCreated'
         - $ref: '#/components/schemas/AgentClosed'
@@ -173,6 +176,7 @@ components:
         - $ref: '#/components/schemas/SearchConversations'
         - $ref: '#/components/schemas/ResumeConversation'
         - $ref: '#/components/schemas/RequestDiagnostics'
+        - $ref: '#/components/schemas/SaveProviderPreference'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -211,6 +215,8 @@ components:
           type: integer
         directoryName:
           type: string
+        provider:
+          $ref: '#/components/schemas/AgentProviderId'
         isExternal:
           type: boolean
         palette:
@@ -277,6 +283,11 @@ components:
           description: Map of agent ID (string) to external flag.
           additionalProperties:
             type: boolean
+        providers:
+          type: object
+          description: Map of agent ID (string) to provider ID.
+          additionalProperties:
+            $ref: '#/components/schemas/AgentProviderId'
 
     AgentStatus:
       description: Active vs waiting state for an agent (drives character animation).
@@ -1233,7 +1244,7 @@ components:
           const: webviewReady
 
     LaunchAgent:
-      description: Launch a new Claude agent in a new terminal.
+      description: Launch a new AI agent in a new terminal.
       type: object
       additionalProperties: false
       required: [type]
@@ -1243,6 +1254,8 @@ components:
         directoryPath:
           type: string
           description: Path of the Directory to launch into.
+        provider:
+          $ref: '#/components/schemas/AgentProviderId'
         palette:
           type: integer
           minimum: 0
@@ -2053,3 +2066,64 @@ components:
           type: string
         frame:
           type: integer
+
+    AgentProviderId:
+      description: Supported interactive AI CLI provider identifier.
+      type: string
+      enum: [claude, codex, gemini]
+
+    ProvidersDetected:
+      description: Detected availability of supported CLI providers on the host.
+      type: object
+      additionalProperties: false
+      required: [type, installed, recommended]
+      properties:
+        type:
+          const: providersDetected
+        installed:
+          type: object
+          additionalProperties:
+            type: boolean
+        recommended:
+          type: [string, 'null']
+
+    ProviderPreferenceLoaded:
+      description: Persisted provider selection preferences sent on webviewReady.
+      type: object
+      additionalProperties: false
+      required: [type, defaultProvider, askEachTime, preferenceSet]
+      properties:
+        type:
+          const: providerPreferenceLoaded
+        defaultProvider:
+          type: [string, 'null']
+        askEachTime:
+          type: boolean
+        preferenceSet:
+          type: boolean
+
+    ProviderPreferenceSaved:
+      description: Confirmation of saved provider preferences.
+      type: object
+      additionalProperties: false
+      required: [type, defaultProvider, askEachTime]
+      properties:
+        type:
+          const: providerPreferenceSaved
+        defaultProvider:
+          type: [string, 'null']
+        askEachTime:
+          type: boolean
+
+    SaveProviderPreference:
+      description: Save the user's default AI provider and ask-each-time preference.
+      type: object
+      additionalProperties: false
+      required: [type, defaultProvider, askEachTime]
+      properties:
+        type:
+          const: saveProviderPreference
+        defaultProvider:
+          type: [string, 'null']
+        askEachTime:
+          type: boolean

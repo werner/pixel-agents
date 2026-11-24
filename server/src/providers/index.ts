@@ -16,6 +16,19 @@ import { claudeProvider } from './hook/claude/claude.js';
 
 export { claudeProvider };
 export { copyHookScript } from './hook/claude/claudeHookInstaller.js';
+export {
+  detectInstalledProviders,
+  ensureDefaultProviderInitialized,
+  findNewestSessionFile,
+  getProviderPreference,
+  getRecommendedProvider,
+  isAgentProvider,
+  KEY_ASK_PROVIDER_EACH_TIME,
+  KEY_DEFAULT_PROVIDER,
+  KEY_PROVIDER_PREFERENCE_SET,
+  PROVIDER_DEFINITIONS,
+  saveProviderPreference,
+} from './multiProvider.js';
 
 /** Every bundled hook provider, in registration order. The consent gate loops
  *  over this at the webviewReady handshake (one ask per provider that needs

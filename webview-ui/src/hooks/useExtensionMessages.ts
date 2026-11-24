@@ -25,7 +25,7 @@ import {
   isSubagentToolName,
   setProviderCapabilities,
 } from '../office/toolUtils.js';
-import type { OfficeLayout, ToolActivity } from '../office/types.js';
+import type { OfficeLayout, Provider, ToolActivity } from '../office/types.js';
 import { setWallSprites } from '../office/wallTiles.js';
 import { isBrowserRuntime, isE2E } from '../runtime.js';
 import { transport } from '../transport/index.js';
@@ -75,6 +75,35 @@ interface FurnitureAsset {
 
 /** A Directory as the wire carries it (core/asyncapi.yaml documents its fields). */
 export type { Directory };
+
+export interface DetectedProvider {
+  id: Provider;
+  installed: boolean;
+}
+
+export interface ProviderPreference {
+  defaultProvider: Provider;
+  askEachTime: boolean;
+}
+
+function toDetectedProviders(msg: Record<string, unknown>): DetectedProvider[] {
+  const direct = msg.providers;
+  if (Array.isArray(direct)) {
+    return direct
+      .filter(
+        (p): p is { id: Provider; installed: boolean } =>
+          !!p &&
+          typeof p === 'object' &&
+          typeof (p as { id?: unknown }).id === 'string' &&
+          typeof (p as { installed?: unknown }).installed === 'boolean',
+      )
+      .map((p) => ({ id: p.id, installed: p.installed }));
+  }
+  const installed = msg.installed as Record<string, unknown> | undefined;
+  if (!installed || typeof installed !== 'object') return [];
+  const known: Provider[] = ['claude', 'codex', 'gemini'];
+  return known.map((id) => ({ id, installed: installed[id] === true }));
+}
 
 /** A refused saveDirectory, shown inline in the Directory modal. `seq` rises
  *  with every rejection so a repeat of the same one still reads as new. */
@@ -166,6 +195,9 @@ interface ExtensionMessageState {
   /** Reorder the cards (a finished drag): shown at once, saved by the server,
    *  which tells every open office. */
   saveCardOrder: (order: number[]) => void;
+  providers: DetectedProvider[];
+  recommendedDefault: Provider | null;
+  providerPreference: ProviderPreference;
 }
 
 /** Drop one key from a keyed-by-agent record without touching identity when
@@ -232,6 +264,12 @@ export function useExtensionMessages(
   // VS Code mode, so terminalAvailable stays false and no terminal UI renders).
   const [terminalAvailable, setTerminalAvailable] = useState(false);
   const [terminalUnavailableReason, setTerminalUnavailableReason] = useState<string | null>(null);
+  const [providers, setProviders] = useState<DetectedProvider[]>([]);
+  const [recommendedDefault, setRecommendedDefault] = useState<Provider | null>(null);
+  const [providerPreference, setProviderPreference] = useState<ProviderPreference>({
+    defaultProvider: 'claude',
+    askEachTime: false,
+  });
   /** Agent ids with a live PTY, in the order their terminals opened. */
   const [terminalAgentIds, setTerminalAgentIds] = useState<number[]>([]);
   /** Agents that are Teammates (they have a Lead). They get no card. */
@@ -457,7 +495,8 @@ export function useExtensionMessages(
           const repeat = msg.repeat as number | undefined;
           // A resumed conversation asks for the seat its agent sat in.
           const seatId = msg.seatId as string | undefined;
-          os.addAgent(id, palette, repeat, seatId, undefined, directoryName);
+          const provider = msg.provider as Provider | undefined;
+          os.addAgent(id, palette, repeat, seatId, undefined, directoryName, undefined, provider);
           noteDirectoryName(directoryName);
           if (isHeadlessAgent(msg.isExternal as boolean | undefined)) {
             os.setHeadless(id, true);
@@ -475,6 +514,7 @@ export function useExtensionMessages(
         const meta = (msg.agentMeta || {}) as Record<number, ExistingAgentMeta>;
         const directoryNames = (msg.directoryNames || {}) as Record<number, string>;
         const externalAgents = (msg.externalAgents || {}) as Record<number, boolean>;
+        const providerMap = (msg.providers || {}) as Record<number, Provider>;
         const headlessAgents: Record<number, boolean> = {};
         for (const id of incoming) {
           noteDirectoryName(directoryNames[id]);
@@ -493,6 +533,7 @@ export function useExtensionMessages(
             layoutReadyRef.current,
             pendingAgents,
             headlessAgents,
+            providerMap,
           )
         ) {
           saveAgentSeats(os);
@@ -905,6 +946,23 @@ export function useExtensionMessages(
         const id = msg.id as number;
         os.setAgentContext(id, msg.contextTokens as number, msg.maxContextTokens as number);
         setAgentContextUsed(id, msg.contextTokens as number, msg.maxContextTokens as number);
+      } else if (msg.type === 'providersDetected') {
+        setProviders(toDetectedProviders(msg));
+        setRecommendedDefault(
+          (msg.recommendedDefault as Provider | null | undefined) ??
+            (msg.recommended as Provider | null | undefined) ??
+            null,
+        );
+      } else if (
+        msg.type === 'providerPreferenceLoaded' ||
+        msg.type === 'providerPreferenceSaved'
+      ) {
+        if (typeof msg.defaultProvider === 'string' && typeof msg.askEachTime === 'boolean') {
+          setProviderPreference({
+            defaultProvider: msg.defaultProvider as Provider,
+            askEachTime: msg.askEachTime,
+          });
+        }
       }
     };
     const unsubscribe = transport.onMessage(handler);
@@ -992,5 +1050,8 @@ export function useExtensionMessages(
     terminalAvailable,
     terminalUnavailableReason,
     terminalAgentIds,
+    providers,
+    recommendedDefault,
+    providerPreference,
   };
 }

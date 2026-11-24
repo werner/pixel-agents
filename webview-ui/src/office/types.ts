@@ -41,6 +41,13 @@ export const Direction = {
 } as const;
 export type Direction = (typeof Direction)[keyof typeof Direction];
 
+export const Provider = {
+  CLAUDE: 'claude',
+  CODEX: 'codex',
+  GEMINI: 'gemini',
+} as const;
+export type Provider = (typeof Provider)[keyof typeof Provider];
+
 /** 2D array of hex color strings: '' = transparent, '#RRGGBB' = opaque, '#RRGGBBAA' = semi-transparent. [row][col] */
 export type SpriteData = string[][];
 
@@ -228,6 +235,8 @@ export interface Character extends Blinker {
   helperIdleSec: number;
   /** Parent agent ID if this is a sub-agent, null otherwise */
   parentAgentId: number | null;
+  /** Provider for this agent */
+  provider?: Provider;
   /** Active matrix spawn/despawn effect, or null */
   matrixEffect: 'spawn' | 'despawn' | null;
   /** Timer counting up from 0 to MATRIX_EFFECT_DURATION */

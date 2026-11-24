@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react';
 
+import type { DetectedProvider, ProviderPreference } from '../hooks/useExtensionMessages.js';
 import { officeRadio } from '../music/musicEngine.js';
 import { useOfficeRadio } from '../music/useOfficeRadio.js';
 import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js';
+import type { Provider } from '../office/types.js';
 import { isBrowserRuntime } from '../runtime.js';
 import { transport } from '../transport/index.js';
 import { useUsageBridge } from '../usage/useUsageBridge.js';
@@ -46,6 +48,8 @@ interface SettingsModalProps {
   onExportLayout: () => void;
   /** Browser-native layout import from a chosen file (standalone only). */
   onImportLayout: (file: File) => void;
+  providers: DetectedProvider[];
+  providerPreference: ProviderPreference;
 }
 
 export function SettingsModal({
@@ -71,6 +75,8 @@ export function SettingsModal({
   onToggleShowHostDirectories,
   onExportLayout,
   onImportLayout,
+  providers,
+  providerPreference,
 }: SettingsModalProps) {
   // The office radio's player is a per-browser setting the radio keeps itself.
   const radio = useOfficeRadio();
@@ -274,6 +280,52 @@ export function SettingsModal({
           onChange={onToggleShowHostDirectories}
         />
         <Checkbox label="Debug View" checked={isDebugMode} onChange={onToggleDebugMode} />
+        {providers.length > 0 && (
+          <div className="mt-6 pt-6 border-t border-border flex flex-col gap-4 px-10 pb-6">
+            <div className="text-xs uppercase tracking-wider text-text-muted">AI Providers</div>
+            <div className="flex flex-col gap-4">
+              {providers.map((p) => {
+                const selected = providerPreference.defaultProvider === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() =>
+                      transport.send({
+                        type: 'saveProviderPreference',
+                        defaultProvider: p.id,
+                        askEachTime: providerPreference.askEachTime,
+                      })
+                    }
+                    className={`flex items-center justify-between px-8 py-4 text-sm border-2 rounded-none cursor-pointer ${
+                      selected
+                        ? 'bg-active-bg border-accent text-text'
+                        : 'bg-transparent border-transparent hover:bg-white/10 text-text'
+                    } ${p.installed ? '' : 'opacity-50'}`}
+                  >
+                    <span className="capitalize">{p.id}</span>
+                    <span
+                      className={`text-xs ${p.installed ? 'text-status-ok' : 'text-status-error'}`}
+                    >
+                      {p.installed ? 'Installed' : 'Missing'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <Checkbox
+              label="Ask each time"
+              checked={providerPreference.askEachTime}
+              onChange={() =>
+                transport.send({
+                  type: 'saveProviderPreference',
+                  defaultProvider: providerPreference.defaultProvider as Provider,
+                  askEachTime: !providerPreference.askEachTime,
+                })
+              }
+            />
+          </div>
+        )}
       </Modal>
       {usageBridge && (
         <Modal
